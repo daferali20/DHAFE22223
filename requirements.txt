@@ -1,0 +1,9 @@
+yfinance
+pandas
+numpy
+openpyxl
+xlsxwriter
+python-dotenv
+requests
+cachetools
+colorama
