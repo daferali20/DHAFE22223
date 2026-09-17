@@ -1,4 +1,4 @@
-"""Market/fundamental data provider and company analysis pipeline."""
+"""Market/fundamental data provider for Buffett Value Lab."""
 from __future__ import annotations
 
 import json
@@ -16,13 +16,12 @@ from analytics import average, cagr, classify, estimate_intrinsic_value, positiv
 from config import CACHE_DIR, CACHE_HOURS, FALLBACK_SYMBOLS, SPECIALIZED_SECTORS
 from models import AnalysisResult
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 USER_AGENT = "BuffettValueLab/3.0 educational desktop screener"
 
 
 def get_sp500_symbols() -> list[str]:
-    """Load the current S&P 500 constituents for free, with a safe fallback."""
     try:
         response = requests.get(WIKI_URL, headers={"User-Agent": USER_AGENT}, timeout=12)
         response.raise_for_status()
@@ -34,13 +33,18 @@ def get_sp500_symbols() -> list[str]:
 
 
 def _statement(ticker: yf.Ticker, method_name: str, attr_name: str) -> pd.DataFrame:
+    """Return yearly statement with human-readable row names when supported."""
     try:
         method = getattr(ticker, method_name)
-        df = method(freq="yearly")
+        try:
+            df = method(freq="yearly", pretty=True)
+        except TypeError:
+            df = method(freq="yearly")
         if isinstance(df, pd.DataFrame) and not df.empty:
             return df
     except Exception:
         pass
+
     try:
         df = getattr(ticker, attr_name)
         return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
@@ -48,18 +52,27 @@ def _statement(ticker: yf.Ticker, method_name: str, attr_name: str) -> pd.DataFr
         return pd.DataFrame()
 
 
+def _norm(value: object) -> str:
+    return "".join(ch.lower() for ch in str(value) if ch.isalnum())
+
+
 def _series(df: pd.DataFrame, names: Iterable[str]) -> pd.Series:
+    """Read a statement row regardless of Yahoo's pretty/raw label style."""
     if df is None or df.empty:
         return pd.Series(dtype=float)
+
+    lookup = {_norm(idx): idx for idx in df.index}
     for name in names:
-        if name in df.index:
-            row = pd.to_numeric(df.loc[name], errors="coerce").dropna()
-            try:
-                row.index = pd.to_datetime(row.index)
-                row = row.sort_index()
-            except Exception:
-                pass
-            return row.astype(float)
+        actual = lookup.get(_norm(name))
+        if actual is None:
+            continue
+        row = pd.to_numeric(df.loc[actual], errors="coerce").dropna()
+        try:
+            row.index = pd.to_datetime(row.index)
+            row = row.sort_index()
+        except Exception:
+            pass
+        return row.astype(float)
     return pd.Series(dtype=float)
 
 
@@ -77,7 +90,18 @@ def _latest(series: pd.Series) -> float | None:
     if series is None or series.empty:
         return None
     value = pd.to_numeric(series.iloc[-1], errors="coerce")
-    return float(value) if pd.notna(value) else None
+    return float(value) if pd.notna(value) and np.isfinite(float(value)) else None
+
+
+def _number(*values) -> float | None:
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(number):
+            return number
+    return None
 
 
 def _cache_path(symbol: str) -> Path:
@@ -151,7 +175,7 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
     if fcf.empty and not operating_cf.empty:
         if not capex.empty:
             aligned = pd.concat([operating_cf.rename("ocf"), capex.rename("capex")], axis=1).dropna()
-            fcf = aligned["ocf"] + aligned["capex"]  # Yahoo capex is normally negative.
+            fcf = aligned["ocf"] + aligned["capex"]
         else:
             fcf = operating_cf.copy()
 
@@ -164,7 +188,6 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
     invested_capital = _series(balance, ["Invested Capital"])
     ordinary_shares = _series(balance, ["Ordinary Shares Number", "Share Issued"])
 
-    # Owner earnings estimate: NI + D&A + capex + change in working capital.
     owner_parts = [net_income.rename("ni")]
     if not depreciation.empty:
         owner_parts.append(depreciation.rename("da"))
@@ -173,21 +196,19 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
     if not change_wc.empty:
         owner_parts.append(change_wc.rename("wc"))
     owner_df = pd.concat(owner_parts, axis=1).dropna(subset=["ni"]) if owner_parts else pd.DataFrame()
-    if owner_df.empty:
-        owner_earnings = fcf.copy()
-    else:
-        owner_earnings = owner_df.fillna(0).sum(axis=1)
+    owner_earnings = fcf.copy() if owner_df.empty else owner_df.fillna(0).sum(axis=1)
 
     roe_hist = _aligned_ratio(net_income, equity, 100.0)
 
-    # Approximate ROIC = NOPAT / invested capital.
-    tax_rate = _aligned_ratio(tax_provision, pretax_income, 1.0)
+    tax_rate = _aligned_ratio(tax_provision, pretax_income)
     if not tax_rate.empty:
         tax_rate = tax_rate.clip(lower=0, upper=0.35)
+
     if not operating_income.empty and not invested_capital.empty:
-        roic_df = pd.concat([
-            operating_income.rename("op"), invested_capital.rename("ic"), tax_rate.rename("tax")
-        ], axis=1).dropna(subset=["op", "ic"])
+        roic_df = pd.concat(
+            [operating_income.rename("op"), invested_capital.rename("ic"), tax_rate.rename("tax")],
+            axis=1,
+        ).dropna(subset=["op", "ic"])
         roic_df["tax"] = roic_df["tax"].fillna(0.21)
         roic_df = roic_df[roic_df["ic"] != 0]
         roic_hist = roic_df["op"] * (1 - roic_df["tax"]) / roic_df["ic"] * 100
@@ -195,9 +216,8 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
         roic_hist = pd.Series(dtype=float)
 
     fcf_margin_hist = _aligned_ratio(fcf, revenue, 100.0)
-
     if diluted_eps.empty and not net_income.empty and not diluted_shares.empty:
-        diluted_eps = _aligned_ratio(net_income, diluted_shares, 1.0)
+        diluted_eps = _aligned_ratio(net_income, diluted_shares)
 
     share_hist = diluted_shares if not diluted_shares.empty else ordinary_shares
     years_of_history = max(len(revenue), len(net_income), len(fcf), len(equity), len(share_hist))
@@ -209,28 +229,32 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
     share_change_cagr = cagr(share_hist.tolist())
 
     fast_info = getattr(ticker, "fast_info", {})
-    price = _fast_value(fast_info, "last_price") or info.get("currentPrice") or info.get("regularMarketPrice")
-    market_cap = _fast_value(fast_info, "market_cap") or info.get("marketCap")
-    shares_out = info.get("sharesOutstanding") or _latest(ordinary_shares) or _latest(share_hist)
-    cash_now = _latest(cash) or info.get("totalCash") or 0
-    debt_now = _latest(total_debt) or info.get("totalDebt") or 0
+    price = _number(_fast_value(fast_info, "last_price"), info.get("currentPrice"), info.get("regularMarketPrice"))
+    market_cap = _number(_fast_value(fast_info, "market_cap"), info.get("marketCap"))
+    shares_out = _number(
+        info.get("sharesOutstanding"),
+        _fast_value(fast_info, "shares"),
+        _latest(ordinary_shares),
+        _latest(share_hist),
+    )
+    cash_now = _number(_latest(cash), info.get("totalCash")) or 0.0
+    debt_now = _number(_latest(total_debt), info.get("totalDebt")) or 0.0
     fcf_now = _latest(fcf)
-    pe = info.get("trailingPE") or info.get("forwardPE")
+    pe = _number(info.get("trailingPE"), info.get("forwardPE"))
 
-    debt_to_fcf = (debt_now / fcf_now) if fcf_now and fcf_now > 0 else None
-    fcf_yield = (fcf_now / market_cap * 100) if fcf_now and market_cap and market_cap > 0 else None
+    debt_to_fcf = debt_now / fcf_now if fcf_now and fcf_now > 0 else None
+    fcf_yield = fcf_now / market_cap * 100 if fcf_now and market_cap and market_cap > 0 else None
 
     growth_candidates = [v for v in (revenue_cagr, eps_cagr, fcf_cagr) if v is not None]
-    intrinsic = estimate_intrinsic_value(
-        owner_earnings.tolist(), shares_out, cash_now, debt_now, growth_candidates
-    )
+    intrinsic = estimate_intrinsic_value(owner_earnings.tolist(), shares_out, cash_now, debt_now, growth_candidates)
     margin = ((intrinsic - price) / intrinsic * 100) if intrinsic and price and intrinsic > 0 else None
 
     sector = str(info.get("sector") or "غير مصنف")
     specialized = sector in SPECIALIZED_SECTORS
 
+    roe_from_info = _number(info.get("returnOnEquity"))
     metrics = {
-        "roe_avg": average(roe_hist.tolist()) or ((info.get("returnOnEquity") or 0) * 100 or None),
+        "roe_avg": average(roe_hist.tolist()) or (roe_from_info * 100 if roe_from_info is not None else None),
         "roic_avg": average(roic_hist.tolist()),
         "fcf_margin_avg": average(fcf_margin_hist.tolist()),
         "debt_to_fcf": debt_to_fcf,
@@ -245,11 +269,13 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
         "fcf_yield": fcf_yield,
         "pe": pe,
     }
+
     scores = score_company(metrics, specialized_sector=specialized)
     verdict, strengths, risks = classify(metrics, scores, specialized_sector=specialized)
 
     available_core = sum(
-        x is not None for x in [metrics["roe_avg"], metrics["fcf_margin_avg"], revenue_cagr, eps_cagr, intrinsic]
+        x is not None
+        for x in [metrics["roe_avg"], metrics["fcf_margin_avg"], revenue_cagr, eps_cagr, intrinsic]
     )
     if years_of_history >= 4 and available_core >= 4:
         confidence = "مرتفع"
@@ -269,8 +295,8 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
         symbol=symbol,
         company=str(info.get("longName") or info.get("shortName") or symbol),
         sector=sector,
-        price=float(price) if price else None,
-        intrinsic_value=round(float(intrinsic), 2) if intrinsic else None,
+        price=round(price, 2) if price is not None else None,
+        intrinsic_value=round(float(intrinsic), 2) if intrinsic is not None else None,
         margin_of_safety=round(float(margin), 1) if margin is not None else None,
         buffett_score=scores["buffett_score"],
         quality_score=scores["quality_score"],
@@ -290,7 +316,7 @@ def analyze_symbol(symbol: str, *, force_refresh: bool = False) -> AnalysisResul
         share_change_cagr=round(share_change_cagr, 1) if share_change_cagr is not None else None,
         owner_earnings=round(_latest(owner_earnings), 2) if _latest(owner_earnings) is not None else None,
         fcf_yield=round(fcf_yield, 1) if fcf_yield is not None else None,
-        pe=round(float(pe), 1) if pe else None,
+        pe=round(pe, 1) if pe is not None else None,
         strengths=strengths,
         risks=risks[:5],
         note=note,
