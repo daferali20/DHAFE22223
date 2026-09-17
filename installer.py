@@ -1,35 +1,18 @@
-# installer.py
-import os
-import shutil
-import zipfile
-from datetime import datetime
+"""Small Windows-friendly bootstrap installer."""
+from __future__ import annotations
 
-# المجلد المصدر (المشروع الفعلي)
-SOURCE_DIR = "buffett_screener"
-OUTPUT_ZIP = f"buffett_screener_{datetime.now().strftime('%Y%m%d')}.zip"
+import subprocess
+import sys
+from pathlib import Path
 
-def create_zip():
-    """ضغط المشروع بالكامل مع استثناء الملفات غير الضرورية"""
-    EXCLUDE = {
-        'venv', '__pycache__', '.git', '.vscode',
-        'logs', 'cache', '*.pyc', '.env'
-    }
-    
-    with zipfile.ZipFile(OUTPUT_ZIP, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(SOURCE_DIR):
-            # استثناء المجلدات
-            dirs[:] = [d for d in dirs if d not in EXCLUDE]
-            
-            for file in files:
-                if file.endswith(('.pyc', '.log')) or file == '.env':
-                    continue
-                
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, SOURCE_DIR)
-                zipf.write(file_path, arcname)
-    
-    print(f"✅ تم إنشاء: {OUTPUT_ZIP}")
-    print(f"📦 الحجم: {os.path.getsize(OUTPUT_ZIP) / 1024:.2f} KB")
+ROOT = Path(__file__).resolve().parent
+
+
+def main() -> None:
+    print("Buffett Value Lab — installing dependencies...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")])
+    print("\nDone. Start the app with: python main.py")
+
 
 if __name__ == "__main__":
-    create_zip()
+    main()

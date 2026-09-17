@@ -1,95 +1,40 @@
-"""
-==========================================
-config.py - الإعدادات الرئيسية
-==========================================
-"""
+"""Application configuration for Buffett Value Lab v3."""
+from __future__ import annotations
+
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ==========================================
-# إعدادات عامة
-# ==========================================
-APP_NAME = "ماسح أسهم وارن بافيت"
-APP_VERSION = "2.0.0"
-APP_AUTHOR = "Buffett Screener"
+APP_NAME = "Buffett Value Lab"
+APP_VERSION = "3.0.0"
+APP_SUBTITLE = "Quality × Durability × Valuation"
 
-# ==========================================
-# مسارات المجلدات
-# ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WATCHLIST_DIR = os.path.join(BASE_DIR, "watchlists")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-CACHE_DIR = os.path.join(BASE_DIR, "cache")
+BASE_DIR = Path(__file__).resolve().parent
+CACHE_DIR = BASE_DIR / "cache"
+EXPORT_DIR = BASE_DIR / "exports"
+LOGS_DIR = BASE_DIR / "logs"
+for folder in (CACHE_DIR, EXPORT_DIR, LOGS_DIR):
+    folder.mkdir(parents=True, exist_ok=True)
 
-for folder in [WATCHLIST_DIR, LOGS_DIR, CACHE_DIR]:
-    os.makedirs(folder, exist_ok=True)
+CACHE_HOURS = int(os.getenv("CACHE_HOURS", "6"))
+MAX_WORKERS = max(1, min(int(os.getenv("MAX_WORKERS", "6")), 12))
 
-# ==========================================
-# الشروط الصلبة (Hard Filters) - لا تنازل
-# ==========================================
-HARD_FILTERS = {
-    'free_cash_flow_min': float(os.getenv('FCF_MIN', 0)),
-    'roe_min': float(os.getenv('ROE_HARD_MIN', 8)),
-    'net_margin_min': float(os.getenv('NET_MARGIN_HARD_MIN', 3)),
-}
+DCF_DISCOUNT_RATE = float(os.getenv("DCF_DISCOUNT_RATE", "0.10"))
+DCF_TERMINAL_GROWTH = float(os.getenv("DCF_TERMINAL_GROWTH", "0.025"))
+DCF_MAX_GROWTH = float(os.getenv("DCF_MAX_GROWTH", "0.12"))
+DCF_YEARS = int(os.getenv("DCF_YEARS", "10"))
 
-# ==========================================
-# الشروط المرنة (Soft Filters) - تقبل التفاوض
-# ==========================================
-SOFT_FILTERS = {
-    'roe_ideal': float(os.getenv('ROE_IDEAL', 15)),
-    'operating_margin_ideal': float(os.getenv('OP_MARGIN_IDEAL', 15)),
-    'net_margin_ideal': float(os.getenv('NET_MARGIN_IDEAL', 10)),
-    'debt_to_equity_max': float(os.getenv('DEBT_EQ_SOFT_MAX', 1.5)),
-    'current_ratio_ideal': float(os.getenv('CURRENT_RATIO_IDEAL', 1.5)),
-    'pe_max': float(os.getenv('PE_SOFT_MAX', 40)),
-    'eps_growth_ideal': float(os.getenv('EPS_GROWTH_IDEAL', 10)),
-    'revenue_growth_ideal': float(os.getenv('REV_GROWTH_IDEAL', 8)),
-}
+# Financial companies and REITs often need sector-specific valuation logic.
+SPECIALIZED_SECTORS = {"Financial Services", "Real Estate"}
 
-# ==========================================
-# قائمة الأسهم للفحص
-# ==========================================
-SP500_LIST = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
-    'UNH', 'JNJ', 'V', 'XOM', 'JPM', 'WMT', 'PG', 'MA', 'HD', 'CVX',
-    'LLY', 'ABBV', 'MRK', 'KO', 'PEP', 'AVGO', 'COST', 'ADBE', 'CSCO',
-    'TMO', 'ACN', 'MCD', 'ABT', 'CRM', 'DHR', 'NKE', 'TXN', 'NEE',
-    'PM', 'UPS', 'RTX', 'LOW', 'HON', 'QCOM', 'INTC', 'AMD', 'CAT',
-    'BA', 'GS', 'AXP', 'BLK', 'SBUX'
+# Used only when the live S&P 500 constituent page is unavailable.
+FALLBACK_SYMBOLS = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "LLY",
+    "AVGO", "TSLA", "JPM", "WMT", "V", "XOM", "UNH", "MA", "COST",
+    "ORCL", "JNJ", "HD", "PG", "NFLX", "ABBV", "BAC", "KO", "CRM",
+    "CVX", "MRK", "AMD", "PEP", "TMO", "CSCO", "ACN", "MCD", "ABT",
+    "IBM", "GE", "CAT", "QCOM", "TXN", "GS", "AXP", "INTU", "AMAT",
+    "NOW", "ISRG", "DIS", "PM", "RTX", "SPGI",
 ]
-
-# ==========================================
-# إعدادات الواجهة
-# ==========================================
-UI_CONFIG = {
-    'window_width': 1500,
-    'window_height': 850,
-    'bg_color': '#1e1e1e',
-    'primary_color': '#4CAF50',
-    'secondary_color': '#2196F3',
-    'danger_color': '#b71c1c',
-    'warning_color': '#f57f17',
-    'text_color': '#ffffff',
-    'font_family': 'Arial',
-}
-
-# ==========================================
-# إعدادات الحفظ
-# ==========================================
-SAVE_CONFIG = {
-    'auto_save': os.getenv('AUTO_SAVE', 'true').lower() == 'true',
-    'format': os.getenv('SAVE_FORMAT', 'xlsx'),
-    'prefix': 'buffett_watchlist',
-}
-
-# ==========================================
-# إعدادات السجلات
-# ==========================================
-LOG_CONFIG = {
-    'level': os.getenv('LOG_LEVEL', 'INFO'),
-    'format': '%(asctime)s - %(levelname)s - %(message)s',
-    'file': os.path.join(LOGS_DIR, 'screener.log'),
-}
